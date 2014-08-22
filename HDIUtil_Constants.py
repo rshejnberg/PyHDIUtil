@@ -15,3 +15,6 @@ class Constants:
 
                 }
     utility = 'hdiutil'
+    
+    def get_valid_args(self, cmd, option):
+        return self.commands[cmd][option]

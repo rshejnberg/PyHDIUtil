@@ -6,16 +6,6 @@ import os, plistlib
 from HDIUtil_Constants import Constants
 from utils import Helpers
 
-
-def valid_arg(cmd, option, arg):
-    if arg in Constants.commands[cmd][option]:
-        return True
-    else:
-        return False
-        
-def get_valid_args(cmd, option):
-    return Constants.commands[cmd][option]
-
 class HDIUtil(object):
 
     # Utility name
@@ -458,6 +448,6 @@ if __name__ == '__main__':
     hdiutil = HDIUtil()
     kwargs = {'size': '10m', 'volname':'poop', 'type':'UDIF'}
     disk_image = hdiutil.load('~/desktop/mydmg2.dmg')
-
+    disk_image.size = '20m'
 
     print disk_image
