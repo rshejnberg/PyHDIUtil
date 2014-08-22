@@ -1,57 +1,35 @@
-###################################################
-#                                                 #
-#                                                 #
-#                     PyHDIUtil                   #
-#      A module for interacting with OS X's       #
-#                 hdiutil utility                 #
-#                                                 #
-#               Author: Raphael Shejnberg         #
-#                                                 #
-###################################################
+#
+#                                                    Raphael Shejnberg, 8/21/14
+#
 
-import os, subprocess, plistlib
+import os, plistlib
+from HDIUtil_Constants import Constants
+from utils import Helpers
 
-commands = {'create' : 
-                {   'uid' : None,
-                    'gid' : None,
-                    'size': None, 
-                    'encryption' : [False, 'AES-128', 'AES-256'], 
-                    'type' : ['UDIF', 'SPARSE', 'SPARSEBUNDLE'] , 
-                    'volname' : None, 
-                    'fs' : ['HFS+', 'HFS+J' '(JHFS+)', 'HFSX', 'JHFS+X', 'MS-DOS', 'UDF']
-                },
-            'imageinfo' :
-                {    'plist' : None     },
-            'info' :
-                {    'plist' : None     }
 
-            }
-utility = 'hdiutil'
 def valid_arg(cmd, option, arg):
-    if arg in commands[cmd][option]:
+    if arg in Constants.commands[cmd][option]:
         return True
     else:
         return False
         
 def get_valid_args(cmd, option):
-    return commands[cmd][option]
+    return Constants.commands[cmd][option]
 
 class HDIUtil(object):
 
-    ####################################### DEFAULT SETTINGS ############################################
-    
+    # Utility name
     NAME = 'hdiutil'
 
     # Set default options here                
     DEFAULT_FS_INDEX = 0
     DEFAULT_TYPE_INDEX = 0
-    
-    # Shortcuts
+
     DEFAULT_FS = get_valid_args('create', 'fs')[DEFAULT_FS_INDEX]
     DEFAULT_TYPE = get_valid_args('create', 'type')[DEFAULT_TYPE_INDEX]
     
     def __init__(self):
-        # Hash representing the default values for given options
+        # Hash of default values for given options
         self._default_options = {
                      'size' : '100m', 
                      'volname' : 'Volume', 
@@ -73,35 +51,39 @@ class HDIUtil(object):
                 self._default_options[k] = kwargs[k]
             else:
                 raise Exception('Invalid option argument: ' + k)
-            
-    
-    
-    # Remainder of option arg validation occurs here
 	
-    ####################################### DISK IMAGE FACTORY #############################
-    ## Validation: Option-types
-    ## Usage: create(path='/my/path', size='1024b', type='SPARSE')
-    ## Contains: Subclasses of DiskImage: UDIF, Sparse, Sparsebundle
+    ## Disk Image Factory
+    #
+    ## Usage: create(path='/my/path', size='1024b', type='SPARSE') 
+    ## All disk-image classes are contained in this method to provide regulation over object creation
+    #
     def create(self, *args, **kwargs):
-        ## Disk Image Class
+        ## DiskImage Class
+        # 
+        ## All base logic for disk image actions contained in here
     	class DiskImage(object):
                 UTILITY_NAME = 'hdiutil'
                 
+                ## Usage: Has multiple use-cases regarding disk-images
+                ##    Case 1: Create a disk-image
+                ##       DiskImage(path='some/path', size='1024', type='SPARSE')
+                ##    Case 2: Generate an object from an existing disk-image
+                ##       DiskImage(path='some/path.dmg', create_new=False)
                 def __init__(self, options):
-                    # Deep-copy options to hash where keys match member vars and vals set to None
+
                     if 'create_new' in options:
                         create_new = False if options.pop('create_new') is 'False' else True
                     
-                    # Set path and retrieve info from dmg (process dependent on self.path)
-
+                    # Set path and retrieve info from disk-image (process dependent on self.path)
                     if not create_new:
-
                         self.path = options.pop('path')
                         options = self.generate_data_model(self.diskutil_info())
 
                     init_options = self.obj_format(options)
                     
-                    # Initialize to none
+                    # Initialize all fields to None
+                    # Validation of member variables that occurs in the setters does not happen on the initial assignment of variables
+                    # this ensures that all field will be validated on initialization
                     self.__dict__.update(dict([(k, None) for k in init_options.keys()]))
 
                     # Copy values to self
@@ -118,9 +100,9 @@ class HDIUtil(object):
                     for k in self.__dict__.keys():
                         str += ("{0:20}:\t\t{1:<10}\n".format(k[1:], self.__dict__[k]))
                     return str
-            
 
-                # Setters & getters
+
+                # Setters and getters
                 
                 # Encryption settings
                 # Values: False, AES-128, AES-256
@@ -150,22 +132,26 @@ class HDIUtil(object):
                 
                 # Size of disk image in bytes. This does not include overhead
                 @property
-                def size_in_bytes(self):
-                    return self._size_in_bytes
+                def size(self):
+                    return self._size
        
-                @size_in_bytes.setter
-                def size_in_bytes(self, size):
+                @size.setter
+                def size(self, size):
+                    
+                    if isinstance(size, str):
+                        size = Helpers.get_bytes(size)
+                        
                     # General validation testing that size is an int and that space is available on disk
-                    if not is_float(size):
+                    if not Helpers.is_float(size):
                         raise Exception('Invalid argument. Size must be an integer')
-                    elif size >= sys_space_available():
+                    elif size >= Helpers.bytes_available():
                         raise Exception('Invalid argument. Size is too large, not enough space.')
                 
                     # Different handling cases depending on if size has been assigned before
-                    if not self._size_in_bytes:
-                        self._size_in_bytes = size
-                    else:
-                        raise Exception('Disk image size already assigned. Call DiskImage.resize() to change disk size.')
+                    if self._size:
+                        self.run_hdiutil_command('resize', self.path, size=Helpers.hr_bytes(size))
+                        print('Disk image resized to ' + Helpers.hr_bytes(size))
+                    self._size = size
             
   
                 # Path to the name of the volume (what appears when its mounted)
@@ -217,92 +203,61 @@ class HDIUtil(object):
                         raise Exception('Invalid argument. Type arg must be among the following ' + ', '.join(valid_args('create')))
     
                 
-                ############################### os.system helpers ##########################
-                
-                # Generates a string containing a series of args and options formatted for bash
-                def generate_command_str(self, *args, **kwargs):
-                    args_str = kwargs_str = ''
-                    # Format args and k-args into command
-                    # All kwargs are prepended with a dash (-)
-                    if len(args) > 1:
-                        args_str += ' '.join(args)
-    
-                    if kwargs:
-                        for k in kwargs.keys():
-                            if kwargs[k] is None:
-                                kwargs[k] = ''
-                            kwargs['-' + k] = kwargs.pop(k)
-                        kwargs_str = ' '.join(kwargs)
-                    command = ' '.join([args_str, kwargs_str])
-                    return command
-                    
+
+                # Formatting Helpers
+                #
                 # Converts a dict representing an instance of this object to a standardized format where keys 
                 # are the same as those used in bash commands
                 def standard_format(self):
                     options = dict(self)
                     for k in options.keys():
                         options[k[1:]] = options.pop(k)
-                    options['size'] = options.pop('size_in_bytes')
                     if not options['encryption']:
                         del options['encryption']
                     return options
                 # Converts bash style options to a format for this object type
                 def obj_format(self, data):
                     options = dict(data)
-                    options['size_in_bytes'] = options.pop('size')
                     for k in options.keys():
                         options['_' + k] = options.pop(k)
                         
                     return options
                     
                                     
-                # Format options for commands
-                # Retrieves options from member variables ensuring that they've undergone validation
-                def create_command(self):
-                    # Copy relevant options from member vars
 
+                # Runs an hdiutil command
+                def run_hdiutil_command(self, *args, **kwargs):
+    
+                    args = ['hdiutil'] + list(args)
+                    try:
+                        out = Helpers.run_command(*args, **kwargs)
+                    except Exception, e:
+                        # Some commands require the disk-image to be mounted/unmounted. If ran when it isn't it returns
+                        # saying 'Resource temporarily unavailable'
+                        if 'Resource temporarily unavailable' in str(e):
+                            if self.is_mounted():
+                                self.detach()
+                            else:
+                                self.attach()
+                        out = Helpers.run_command(*args, **kwargs)
+                    return out
+                    
+                # Create a disk image from self
+                def create_command(self):
                    options = self.__dict__
-                   # Remove or change vars that don't match terminal side options
                    options = self.standard_format()
-                   
                    command = run_hdiutil_command('create', options.pop('path'), **options)
                    
                    
             
-                # Runs command in new process via subprocess.Popen accepting popen options via options dict
-                def system(self, command, **options):
-                    
-                    try:
-                        proc = subprocess.Popen(command, **options)
-                        (out, err) = proc.communicate()
-                    except OSError:
-                        raise Exception('OSError, Command not found: ' + args[0])
 
-                    if err:
-                        raise Exception('Problem ocurred running command: {}. {}'.format(command, err ))
-                    else:
-                        return out
-                        
-                def run_hdiutil_command(self, *args, **kwargs):
-                    
-                    args = ['hdiutil'] + list(args)
-                    return self.run_command(*args, **kwargs)
-                    
-                # Interface for executing hdiutil commands
-                def run_command(self, *args, **kwargs):
-                    
-                    system_options = {
-                        'shell' : True, 
-                        'stdout' : subprocess.PIPE, 
-                        'stderr' : subprocess.PIPE, 
-                        'stdin' : subprocess.PIPE
-                    }
-                    command = self.generate_command_str(*args, **kwargs)
-                    return self.system(command, **system_options)
-                    
-                ############## Info Extraction ################
-
-
+                # Info Extraction Helpers
+                #
+                # Extracts info of existing dmg and sets instance vars to match
+                def update(self):
+                    info = self.generate_data_model(self.diskutil_info())
+                    for k in info.keys():
+                        setattr(self, k, info[k])
                 # Returns the path to the mounting point of the disk
                 def get_mounting_point(self):
                     info = self.info()
@@ -318,7 +273,27 @@ class HDIUtil(object):
                         return True
                     else:
                         return False
-                ############## Mounting Related ##############
+                # Generate a dict of info used in DiskImage initialization
+                # image_info arg must be
+                def generate_data_model(self, image_info):
+                    ext = self.path.split('.')[-1]
+                    options = {
+                        'volname' : 'Volume Name',
+                        'fs' : 'File System Personality',
+                        'size' : 'Total Size'
+                    }
+
+                    for k in options.keys():
+                        options[k] = image_info[options[k]]
+                    str_size = ' '.join(options['size'].split(' ')[:2])
+
+                    options['size'] = Helpers.get_bytes(str_size)
+                    options['type'] = ext if ext != 'dmg' else 'UDIF'
+                    
+                    return options
+                
+                # Commands
+                #
                 # Attaches a disk
                 def attach(self):
                     cmd = 'attach'
@@ -331,7 +306,6 @@ class HDIUtil(object):
                     cmd = 'detach'
                     self.run_hdiutil_command(cmd, self.mounting_point())
                 
-                ############## Utility Commands ############
                 # hdiutil isencrypted
                 def is_encrypted(self):
                     if self.is_mounted():
@@ -365,36 +339,11 @@ class HDIUtil(object):
                     UTILITY_NAME = 'diskutil'
                     self.attach()
                          
-                    response = self.run_command(UTILITY_NAME, 'info', self.get_mounting_point())
+                    response = Helpers.run_command(UTILITY_NAME, 'info', self.get_mounting_point())
                     info = {}
                     for line in filter(lambda content: content != '', response.splitlines()):
                         info[line.split(':')[0].lstrip()] = line.split(':')[-1].strip()
                     return info
-                    
-                # Generate a dict of info used in DiskImage initialization
-                # image_info arg must be
-                def generate_data_model(self, image_info):
-                    ext = self.path.split('.')[-1]
-                    options = {
-                        'volname' : 'Volume Name',
-                        'fs' : 'File System Personality',
-                        'size' : 'Total Size'
-                    }
-
-                    for k in options.keys():
-                        options[k] = image_info[options[k]]
-                    str_size = ' '.join(options['size'].split(' ')[:2])
-
-                    options['size'] = get_bytes(str_size)
-                    options['type'] = ext if ext != 'dmg' else 'UDIF'
-                    
-                    return options
-                    
-                # Extracts info of existing dmg and sets instance vars to match
-                def update(self):
-                    info = self.generate_data_model(self.diskutil_info())
-                    for k in info.keys():
-                        setattr(self, k, info[k])
                         
                 # Resets the password for the disk image
                 # hdiutil - chpass
@@ -403,12 +352,7 @@ class HDIUtil(object):
                     read_password()
                 
            
-                # Resize a disk image if possible
-                # hdiutil - resize
-                # Include max new_size and min new_size
-                def resize(self, new_size):
-                    self.size_in_bytes = get_bytes(new_size)
-                    print self.size
+
                     
                  
     
@@ -509,73 +453,11 @@ class HDIUtil(object):
             return False
         
 
-    
-    ### These are helper methods directly related to DiskImage that could possibly be moved into the class later
-    
-
-
-
-## Accepts args and kewyord-args in same format as subprocess.Popen does
-## Usage: run_command('hdiutil', '~/desktop/mydmg.dmg', size=100000)
-##        run_command('hdiutil', 'imageinfo', plist=None)
-## For options that lack arguments such as ' -plist ' pass value of None
-
-def read_password(self):
-    print('Enter a password:')
-    p1 = input()                
-    print('Reenter the password:')
-    p2 = input()
-    if p1 == p2:
-        os.system('read -s ' + input())
-        os.system('read -s ' + input())
-        return True
-    return False
-## Returns a human-readable representation of bytes
-def hr_bytes(bytes):
-    for x in ['b','k','m','g','t']:
-        if bytes < 1024.0:
-            return "%3.1f%s" % (bytes, x)
-        bytes /= 1024.0
-        
-## Converts a human-readable byte string in the formnat '12 KB' to bytes
-def get_bytes(hr_size):
-    # size_format 1 : 100 MB
-    # size_format 2 : 100m
-    byte_units = {'b' : 1, 'k' : 1000, 'm' : 1000000, 'g' : 1000000000, 't' : 1000000000000}
-    
-    size_format = 1 if hr_size[-2:][0].lower() in byte_units else ( 2 if hr_size[-1].lower() in byte_units else None)
-
-    if size_format == 1:
-        unit = hr_size[-2].lower()
-        num = hr_size[:-3]
-    elif size_format == 2:
-        unit = hr_size[-1:].lower()
-        num = hr_size[:-1]
-    else:
-        raise Exception('Human-readable size not in recognized format: ' + hr_size)
-
-    if not is_float(num):
-        raise Exception("Size must be a number. Format the size like this: 100m or 100 MB")
-    if unit not in byte_units:
-        raise Exception("Human-readable byte unit must be one of the following: [{}]".format( ', '.join(byte_units.keys())))
-    return float(num) * byte_units[unit]
-
-def is_float(str):
-    try: 
-        float(str)
-        return True
-    except ValueError:
-        return False
-
-def sys_space_available():
-    return os.system('du -sh ~')
 # Driver Code
 if __name__ == '__main__':
     hdiutil = HDIUtil()
     kwargs = {'size': '10m', 'volname':'poop', 'type':'UDIF'}
     disk_image = hdiutil.load('~/desktop/mydmg2.dmg')
-    disk_image.detach()
 
-    disk_image.resize('20 mb')
+
     print disk_image
-    
