@@ -6,17 +6,14 @@ import os, plistlib
 from HDIUtil_Constants import Constants
 from utils import Helpers
 
+# Methods to possibly be move over into seperate diskutil class
+def change_volname(old_name, new_name):
+    Helpers.run_command('diskutil', 'rename', old_name, new_name)
+    
 class HDIUtil(object):
 
     # Utility name
     NAME = 'hdiutil'
-
-    # Set default options here                
-    DEFAULT_FS_INDEX = 0
-    DEFAULT_TYPE_INDEX = 0
-
-    DEFAULT_FS = get_valid_args('create', 'fs')[DEFAULT_FS_INDEX]
-    DEFAULT_TYPE = get_valid_args('create', 'type')[DEFAULT_TYPE_INDEX]
     
     def __init__(self):
         # Hash of default values for given options
@@ -25,8 +22,8 @@ class HDIUtil(object):
                      'volname' : 'Volume', 
                      'path' : '~', 
                      'encryption' : False,
-                     'fs' : self.DEFAULT_FS, 
-                     'type' : self.DEFAULT_TYPE,
+                     'fs' : 'HFS+', 
+                     'type' : 'UDIF',
                      'create_new' : True}
                      
     # Default options when creating DiskImages            
@@ -60,10 +57,7 @@ class HDIUtil(object):
                 ##    Case 2: Generate an object from an existing disk-image
                 ##       DiskImage(path='some/path.dmg', create_new=False)
                 def __init__(self, options):
-
-                    if 'create_new' in options:
-                        create_new = False if options.pop('create_new') is 'False' else True
-                    
+                    create_new = False if 'create_new' in options and options.pop('create_new') is 'False' else True
                     # Set path and retrieve info from disk-image (process dependent on self.path)
                     if not create_new:
                         self.path = options.pop('path')
@@ -77,16 +71,17 @@ class HDIUtil(object):
                     self.__dict__.update(dict([(k, None) for k in init_options.keys()]))
 
                     # Copy values to self
-                    for k in init_options.keys():
-                        setattr(self, k, init_options[k])
+                    { k: setattr(self, k, v) for k, v in init_options.items() }
+                    
 
                     # Execute hdiutil create command
-                    if create_new is True:
+                    if create_new:
                         self.create_command()
 
                 
                 def __repr__(self):
                     str = ''
+                    
                     for k in self.__dict__.keys():
                         str += ("{0:20}:\t\t{1:<10}\n".format(k[1:], self.__dict__[k]))
                     return str
@@ -103,7 +98,7 @@ class HDIUtil(object):
                 @encryption.setter
                 def encryption(self, encryption):
                     if self._encryption is None:
-                        if valid_arg('create', 'encryption', encryption):
+                        if encryption in Constants.valid_args('create', 'encryption'):
                             self._encryption = encryption
                         else:
                             raise Exception('Invalid arg for encryption: ' + encryption)
@@ -116,6 +111,7 @@ class HDIUtil(object):
                 def mounting_point(self):
                     output = self.run_hdiutil_command('info', plist=None)
                     image_info = plistlib.readPlistFromString(output)
+                    
                     for image in image_info['images']:
                         if self.path.split('/')[-1] in image['image-path']:
                             return image['system-entities'][1]['dev-entry']
@@ -128,8 +124,7 @@ class HDIUtil(object):
                 @size.setter
                 def size(self, size):
                     
-                    if isinstance(size, str):
-                        size = Helpers.get_bytes(size)
+                    size = Helpers.get_bytes(size) if isinstance(size, str) else size
                         
                     # General validation testing that size is an int and that space is available on disk
                     if not Helpers.is_float(size):
@@ -140,24 +135,23 @@ class HDIUtil(object):
                     # Different handling cases depending on if size has been assigned before
                     if self._size:
                         self.run_hdiutil_command('resize', self.path, size=Helpers.hr_bytes(size))
-                        print('Disk image resized to ' + Helpers.hr_bytes(size))
                     self._size = size
-            
+                    
   
                 # Path to the name of the volume (what appears when its mounted)
                 @property
                 def volname(self):
-                    return self._volanme
+                    return self._volname
         
                 @volname.setter
                 def volname(self, volname):
+                    change_volname(self.volname, volname)
                     self._volname = volname
             
     
                 # Path to disk image
                 @property
-                def path(self):
-                    return self._path
+                def path(self): return self._path
         
                 @path.setter
                 def path(self, path):
@@ -165,7 +159,7 @@ class HDIUtil(object):
                     if len(path_ar) > 1:
                         filename = path_ar[-1]
                         if not os.path.exists(os.path.expanduser('/'.join(path_ar[:-1]))):
-                            raise Exception('Invalid argument. Path cannot be found')
+                            raise Exception('Invalid argument. Path cannot be found.')
                             
                     self._path = path
                 
@@ -173,11 +167,11 @@ class HDIUtil(object):
                 # File-system type
                 # Values: HFS+, 
                 @property
-                def fs(self):
-                    return self._fs
+                def fs(self): return self._fs
+                
                 @fs.setter
                 def fs(self, fs):
-                    if not valid_arg('create', 'fs', fs):
+                    if fs not in Constants.valid_args('create', 'fs'):
                         raise Exception('Invalid argument. File-system (fs) arg must be among the following: ' + ', '.join(valid_args('create', 'fs')))
                     else:
                         self._fs = fs
@@ -185,11 +179,11 @@ class HDIUtil(object):
                 # Disk image type
                 # Values: UDIF, SPARSE, SPARSEBUNDLE
                 @property
-                def type(self):
-                    return self._type
+                def type(self): return self._type
+                
                 @type.setter
                 def type(self, type):
-                    if not valid_arg('create', 'type', type):
+                    if not type in Constants.valid_args('create', 'type'):
                         raise Exception('Invalid argument. Type arg must be among the following ' + ', '.join(valid_args('create')))
     
                 
@@ -199,25 +193,18 @@ class HDIUtil(object):
                 # Converts a dict representing an instance of this object to a standardized format where keys 
                 # are the same as those used in bash commands
                 def standard_format(self):
-                    options = dict(self)
-                    for k in options.keys():
-                        options[k[1:]] = options.pop(k)
+                    # Generate list form dict(self) but with leading underscore removed
+                    options = {k[1:]: v for k, v in self.__dict__}
                     if not options['encryption']:
                         del options['encryption']
                     return options
                 # Converts bash style options to a format for this object type
-                def obj_format(self, data):
-                    options = dict(data)
-                    for k in options.keys():
-                        options['_' + k] = options.pop(k)
-                        
-                    return options
-                    
+                def obj_format(self, data): return {'_' + k: v for k, v in dict(data).items()}
                                     
-
+                def run_disk_util_command(self, *args, **kwargs):
+                    out = Helpers.run_command(*args, **kwargs)
                 # Runs an hdiutil command
                 def run_hdiutil_command(self, *args, **kwargs):
-    
                     args = ['hdiutil'] + list(args)
                     try:
                         out = Helpers.run_command(*args, **kwargs)
@@ -225,16 +212,14 @@ class HDIUtil(object):
                         # Some commands require the disk-image to be mounted/unmounted. If ran when it isn't it returns
                         # saying 'Resource temporarily unavailable'
                         if 'Resource temporarily unavailable' in str(e):
-                            if self.is_mounted():
-                                self.detach()
-                            else:
-                                self.attach()
+                            self.detach() if self.is_mounted() else self.attach()
+   
                         out = Helpers.run_command(*args, **kwargs)
                     return out
                     
                 # Create a disk image from self
                 def create_command(self):
-                   options = self.__dict__
+
                    options = self.standard_format()
                    command = run_hdiutil_command('create', options.pop('path'), **options)
                    
@@ -246,8 +231,8 @@ class HDIUtil(object):
                 # Extracts info of existing dmg and sets instance vars to match
                 def update(self):
                     info = self.generate_data_model(self.diskutil_info())
-                    for k in info.keys():
-                        setattr(self, k, info[k])
+                    {k: setattr(self, k, v) for k, v in info.items()}
+
                 # Returns the path to the mounting point of the disk
                 def get_mounting_point(self):
                     info = self.info()
@@ -258,11 +243,8 @@ class HDIUtil(object):
 
                 
                 # Helper method lets you know if the disk is mounted
-                def is_mounted(self):
-                    if self.info():
-                        return True
-                    else:
-                        return False
+                def is_mounted(self): return True if self.info() else False
+
                 # Generate a dict of info used in DiskImage initialization
                 # image_info arg must be
                 def generate_data_model(self, image_info):
@@ -272,9 +254,7 @@ class HDIUtil(object):
                         'fs' : 'File System Personality',
                         'size' : 'Total Size'
                     }
-
-                    for k in options.keys():
-                        options[k] = image_info[options[k]]
+                    options = {k: image_info[v] for k, v in options.items()}
                     str_size = ' '.join(options['size'].split(' ')[:2])
 
                     options['size'] = Helpers.get_bytes(str_size)
@@ -289,7 +269,7 @@ class HDIUtil(object):
                     cmd = 'attach'
                     self.run_hdiutil_command(cmd, self.path)
                     if self.is_encrypted():
-                        read_password()
+                        read_password() 
                 
                 # Detaches a disk
                 def detach(self):
@@ -298,15 +278,12 @@ class HDIUtil(object):
                 
                 # hdiutil isencrypted
                 def is_encrypted(self):
-                    if self.is_mounted():
-                        self.info()['image-encrypted']
+                    if self.is_mounted(): self.info()['image-encrypted']
                     else:
                         output = self.run_command('isencrypted', self.path)
                         is_encrypted = output.split(' ')[-1]
-                        if is_encrypted in ['NO']:
-                            return False
-                        else:
-                            return True
+                        return False if is_encrypted in ['NO'] else True
+     
                         
                 
                 # Returns relevant portion of output to command: hdiutil info 
@@ -314,27 +291,21 @@ class HDIUtil(object):
                 def info(self):
                     output = self.run_hdiutil_command('info', plist=None)
                     info = plistlib.readPlistFromString(output)
-                    for image in info['images']:
-                        if self.path.split('/')[-1] in image['image-path']:
-                            return image
+                    return [image for image in info['images'] if self.path.split('/')[-1] in image['image-path']][0]
+
                 # Returns output of command: hdiutil imageinfo
                 def imageinfo(self):
                     output = self.run_command('imageinfo', self.path, plist=None)
-                    if self.is_mounted():
-                        raise Exception('Command: hdiutil imageinfo cannot be run unless the disk is mounted')
-                    else:
-                        return plistlib.readPlistFromString(output)
+                    if self.is_mounted(): raise Exception('Command: hdiutil imageinfo cannot be run unless the disk is mounted')
+                    else: return plistlib.readPlistFromString(output)
                 # Returns relevant portion of command: diskutil info                
                 def diskutil_info(self):
                     UTILITY_NAME = 'diskutil'
                     self.attach()
                          
                     response = Helpers.run_command(UTILITY_NAME, 'info', self.get_mounting_point())
-                    info = {}
-                    for line in filter(lambda content: content != '', response.splitlines()):
-                        info[line.split(':')[0].lstrip()] = line.split(':')[-1].strip()
-                    return info
-                        
+                    non_empty_lines = [line for line in response.splitlines() if line != '']
+                    return {line.split(':')[0].lstrip() : line.split(':')[-1].strip() for line in non_empty_lines}
                 # Resets the password for the disk image
                 # hdiutil - chpass
                 def change_password(self):
@@ -385,14 +356,13 @@ class HDIUtil(object):
         
         # Merge create properly formatted option dict and copy in default values
         options = dict(self.default_options)  
-            
-        for k in kwargs.keys():
-            if k not in self.default_options:
-                raise Exception('Invalid option: ' + k)
-    
-        for k in options:
-            if k in kwargs and kwargs[k] is not None:
-                options[k] = str(kwargs[k])
+        invalid_options = [el for el in options if el not in self.default_options]
+        if invalid_options:
+            raise Exception('Invalid option: ' + ', '.join(invalid_options)) 
+        
+        
+        options = {k: str(kwargs[k]) for k, v in options.items() if k in kwargs and kwargs[k] is not None}
+
         
         types = {
             'dmg' : UDIF,
@@ -408,46 +378,12 @@ class HDIUtil(object):
             raise Exception('Disk image not found.')
         else:
             return self.create(path=path, create_new=False)      
-    # Still necessary??
-    def format_plist(self, plist):
-        for k in plist.keys():
-            plist[k.replace(' ', '-')] = plist.pop(k)
-        return plist
-        
-    def flatten_plist(self, plist, flattened_plist={}, parent_key='', delimiter='_'):
-        if isinstance(plist, dict):
-            for k in plist.keys():
-                is_dict = isinstance(plist[k], dict)
-                if self.is_mutable_obj(plist[k]):
-
-                    flattened_plist.update(self.flatten_plist(plist[k], flattened_plist, k))
-                else:
-
-                    new_key = parent_key + delimiter + k if parent_key else k
-                    flattened_plist[new_key] = plist[k]
-       #     print flattened_plist
-        elif isinstance(plist, list):
-           for index, el in enumerate(plist):
-               new_key = parent_key + delimiter + str(index) if parent_key else el
-               if self.is_mutable_obj(el):
-                   flattened_plist.update(self.flatten_plist(el, flattened_plist, new_key))
-               else:
-                   flattened_plist[new_key] = el
-
-        return flattened_plist
-        
-    def is_mutable_obj(self, obj):
-        if isinstance(obj, dict) or isinstance(obj, list):
-            return True
-        else:
-            return False
-        
 
 # Driver Code
 if __name__ == '__main__':
     hdiutil = HDIUtil()
     kwargs = {'size': '10m', 'volname':'poop', 'type':'UDIF'}
     disk_image = hdiutil.load('~/desktop/mydmg2.dmg')
-    disk_image.size = '20m'
+    disk_image.volname = 'poopy'
 
     print disk_image

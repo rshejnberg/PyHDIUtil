@@ -9,13 +9,14 @@ class Helpers:
         print('Reenter the password:')
         p2 = input()
         if p1 == p2:
-            os.system('read -s ' + input())
-            os.system('read -s ' + input())
+            os.system('read -s ' + p1)
+            os.system('read -s ' + p2)
             return True
         return False
     ## Returns a human-readable representation of bytes
     @staticmethod
     def hr_bytes(bytes):
+        
         for x in ['b','k','m','g','t']:
             if bytes < 1000.0:
                 return "%3.1f%s" % (bytes, x)
@@ -64,14 +65,10 @@ class Helpers:
         # All kwargs are prepended with a dash (-)
         if len(args) >= 1:
             args_str += ' '.join(args)
-        
-        if kwargs:
-            for k in kwargs.keys():
-                dash_k = '-' + k
-                kwargs_str += dash_k
-                if kwargs[k] is not None:
-                    kwargs_str += ' ' + kwargs[k]
+            
 
+        formatted_options = {'-' + k: v for k, v in kwargs.items()}
+        kwargs_str = ' '.join('{} {} '.format(k, v) if v else k for (k, v) in formatted_options.items() )
         command = ' '.join([args_str, kwargs_str])
         return command
         
@@ -84,7 +81,6 @@ class Helpers:
             (out, err) = proc.communicate()
         except OSError:
             raise Exception('OSError, Command not found: ' + args[0])
-    
         if err:
             raise Exception(err)
         else:
